@@ -1,0 +1,295 @@
+---
+title: "COVID"
+author: "Simona Bisiani"
+date: "4/2/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r}
+
+# DATA & PACKAGES
+library(lubridate)
+library(readxl)
+library(tidyverse)
+library(MASS)
+library(reshape2)
+library(ggmap)
+library(mapproj)
+library(grid)
+library(rworldmap)
+library(scales)
+
+#SWEDEN
+sweden <- read_excel("Folkhalsomyndigheten_Covid19.xlsx")
+#ITALY
+italy <- read_csv("dpc-covid19-ita-andamento-nazionale.csv")
+#GLOBAL
+cases_by_pop <- read_csv("total-covid-deaths-per-million.csv")
+
+# FOR DPLYR
+covid_by_pop <- as_tibble(cases_by_pop)
+italia <- as_tibble(italy)
+svezia <- as_tibble(sweden)
+
+# STRIPPING TIMESTAMP
+italia$data <- as.Date(italia$data, "%d%b%Y")
+svezia$Statistikdatum <- as.Date(svezia$Statistikdatum, "%d%b%Y")
+
+
+svezia <- svezia %>% 
+  mutate(kumulativ_fall = cumsum(Totalt_antal_fall))
+
+italia <- italia %>% 
+  dplyr::select(data, totale_casi, totale_positivi, deceduti, nuovi_positivi)
+
+it_swe <- svezia %>% 
+  dplyr::select(Statistikdatum, Totalt_antal_fall, kumulativ_fall) %>% 
+  rename(data = Statistikdatum) %>% 
+  full_join(italia, by = "data")
+
+it_swe_long <- melt(it_swe, id = c("data")) %>% na.omit()
+
+ggplot(it_swe_long, aes(x = data, y = value)) +
+  geom_point(aes(colour = variable)) +
+  labs(title = "Coronavirus statistics in Italy and Sweden",
+  subtitle = "Data from GITHUB and Folkhälsomyndigheten") +
+  theme_minimal() +
+  scale_colour_brewer(palette = "Set1", name = "variable", labels = c("New cases per day Sweden", "Total number of cases Sweden", "Total number of cases Italy", "New cases per day Italy", "Deceased Italy")) 
+
+```
+
+
+0. Global deaths by million people per country
+
+```{r}
+
+## ATTEMPT TWO (european) ######################################################################
+
+# Get the world map
+worldMap <- getMap()
+
+# Member States of the European Union
+europeanUnion <- c("Austria","Belgium","Bulgaria","Croatia","Cyprus",
+                   "Denmark","Estonia","Finland","France",
+                   "Germany","Greece","Hungary","Ireland","Italy", "Latvia",
+                   "Lithuania","Luxembourg","Malta","Poland",
+                   "Portugal","Romania","Slovakia","Slovenia","Spain",
+                   "Sweden","United Kingdom")
+# Select only the index of states member of the E.U.
+indEU <- which(worldMap$NAME%in%europeanUnion) 
+# Extract longitude and latitude border's coordinates of members states of E.U. 
+europeCoords <- lapply(indEU, function(i){
+  df <- data.frame(worldMap@polygons[[i]]@Polygons[[1]]@coords)
+  df$region =as.character(worldMap$NAME[i])
+  colnames(df) <- list("long", "lat", "region")
+  return(df)
+})
+
+europeCoords <- do.call("rbind", europeCoords)
+
+# Adding death by million
+value <- covid_deaths_by_pop %>% 
+  dplyr::filter(region  %in% europeanUnion) %>% 
+  rename(deaths = "Total confirmed deaths due to COVID-19 per million people (deaths per million)")
+
+europeanUnionTable <- data.frame(country = europeanUnion, value = value)
+
+europeCoords$value.deaths <- europeanUnionTable$value.deaths[match(europeCoords$region,europeanUnionTable$country)]
+
+# Plot the map
+P <- ggplot() + geom_polygon(data = europeCoords, aes(x = long, y = lat, group = region, fill = value.deaths),
+                             colour = "black", size = 0.1) +
+  coord_map(xlim = c(-13, 35),  ylim = c(32, 71))
+
+P <- P + scale_fill_gradient(name = "Deaths per million people", low = "yellow", high = "purple", na.value = "grey50")
+
+P + theme_void() +
+  labs(title = "Total confirmed deaths due to COVID-19 per million people (by 6 April 2020)", subtitle = "Data by the European Center for Disease Prevention and Control (ECDC)")
+
+```
+
+1. Total new number of cases per day
+
+```{r}
+
+# TOTAL NEW NUMBER OF CASES PER DAY
+new_cases_per_day <- it_swe_long %>% 
+  filter(variable == c("Totalt_antal_fall", "nuovi_positivi"))
+
+
+ggplot(new_cases_per_day) +
+  geom_col(aes(x = data, y = value, fill = variable), position = "dodge") +
+  labs(title = "New cases per day",
+  subtitle = "Data from Ministero Della Salute and Folkhälsomyndigheten") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Country", labels = c("Sweden", "Italy")) +
+  scale_x_date(labels = date_format("%d-%m"), breaks = "6 day", limits = as.Date(c("2020-02-20", "2020-04-06"), format="%Y/%m/%d/")) +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1)) +
+  labs(x = "", y = "") 
+
+```
+
+2. Total of cases by day
+
+```{r}
+
+# TOTAL NEW CASES CUMULATIVE
+
+cumulative_cases <- it_swe_long %>% 
+  filter(variable == c("kumulativ_fall", "totale_casi"))
+
+
+ggplot(cumulative_cases) +
+  geom_point(aes(x = data, y = value, colour = variable)) +
+  geom_line(aes(x = data, y = value, colour = variable))+
+  labs(title = "Cumulative number of cases (including recovered)",
+  subtitle = "Data from Ministero Della Salute and Folkhälsomyndigheten", y = "", x = "") +
+  theme_minimal() +
+  scale_x_date(labels = date_format("%d-%m"), breaks = "6 day") +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1)) +
+  scale_y_continuous(breaks = c(0, 50000, 100000), labels = comma) +
+  scale_color_discrete(name = "Country", labels = c("Sweden", "Italy")) 
+
+```
+
+```{r}
+
+# THE SAME BUT IN LOG
+cum_cases_since_200 <- cumulative_cases %>%  #it´s actually 300, bad naming
+  filter(value > 200) %>% 
+  mutate(id = row_number()) 
+
+it_swe_cum_swe <- it_swe %>% 
+  dplyr::select("kumulativ_fall") %>% 
+  filter(kumulativ_fall > 300) 
+
+it_swe_cum_it <- it_swe %>% 
+  dplyr::select("totale_casi") %>% 
+  filter(totale_casi > 300) 
+
+cumcasesindex <- it_swe_cum_it %>%
+    rownames_to_column() %>% 
+    left_join(it_swe_cum_swe %>% rownames_to_column()) %>% 
+    dplyr::select(-rowname) %>% 
+    mutate(id = row_number())
+
+melted300 <- melt(cumcasesindex, id = c("id"))
+
+ggplot(melted300) +
+  geom_point(aes(x = id, y = value, colour = variable), position = "dodge") +
+  geom_line(aes(x = id, y = value, colour = variable), position = "dodge") +
+  labs(title = "Cumulative number of cases since 300th case - log scale",
+  subtitle = "Data from Ministero Della Salute and Folkhälsomyndigheten", x = "number of days since 300th case", y = "") +
+  theme_minimal() +
+  scale_colour_discrete(name = "Country", labels = c("Italy", "Sweden")) +
+  scale_y_log10(breaks=c(300,1000,10000,100000), limits=c(300,140000), label = comma) +
+  theme(axis.text.y = element_text(angle = 45)) 
+
+ggplot(cum_cases_since_200) +
+  geom_point(aes(x = data, y = value, colour = variable), position = "dodge") +
+  geom_line(aes(x = data, y = value, colour = variable), position = "dodge") +
+  labs(title = "Cumulative number of cases since 300th case by exact date- log scale",
+  subtitle = "Data from Ministero Della Salute and Folkhälsomyndigheten", x = "", y = "") +
+  theme_minimal() +
+  scale_colour_discrete(name = "Country", labels = c("Sweden", "Italy")) +
+  scale_y_log10(breaks=c(300,1000,10000,100000), limits=c(300,140000), label = comma) +
+  scale_x_date(labels = date_format("%d-%m"), breaks = "6 day") +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1)) +
+  theme(axis.text.y = element_text(angle = 45)) 
+
+new_cases_per_day %>% 
+  filter(value != 0) %>% 
+ggplot() +
+  geom_col(aes(x = data, y = value, fill = variable), position = "dodge") +
+  labs(title = "New cases per day- log scale",
+  subtitle = "Data from Ministero Della Salute and Folkhälsomyndigheten", x = "", y = "") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Country", labels = c("Sweden", "Italy")) +
+  scale_y_log10(breaks=c(0,100,1000,10000), limits=c(1,10000)) +
+  scale_x_date(labels = date_format("%d-%m"), breaks = "6 day") +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1)) 
+
+
+```
+
+```{r}
+
+# THE SAME BUT PROPORTIONAL BY POPULATION
+
+cumcaseprop <- cumcasesindex %>% 
+  mutate(totale_prop = totale_casi/(60360000*1000)) %>% 
+  mutate(totale_prop_swe = kumulativ_fall/(10230000*1000)) 
+
+
+
+
+prop_new_cases <- it_swe %>% 
+  dplyr::select(data, Totalt_antal_fall, nuovi_positivi) %>% 
+   mutate(newit_prop = nuovi_positivi/(60360000*100000)) %>% 
+  mutate(newswe_prop = Totalt_antal_fall/(10230000*100000))
+
+cumpropmelt <- melt(cumcaseprop, id = "id") # RICONTROLLA CONTI
+
+
+ggplot(cumpropmelt) +
+  geom_point(aes(x = id, y = value, colour = variable), position = "dodge") +
+  geom_line(aes(x = id, y = value, colour = variable), position = "dodge") +
+  labs(title = "Cumulative number of cases since 300th case - log scale",
+  subtitle = "Data from Ministero Della Salute and Folkhälsomyndigheten", x = "number of days since 300th case", y = "") +
+  theme_minimal() +
+  scale_colour_discrete(name = "Country", labels = c("Sweden", "Italy")) +
+  scale_y_log10(breaks=c(300,1000,10000,100000), limits=c(300,140000), label = comma) +
+  theme(axis.text.y = element_text(angle = 45)) 
+
+ggplot(cum_cases_since_200) +
+  geom_point(aes(x = data, y = value, colour = variable), position = "dodge") +
+  geom_line(aes(x = data, y = value, colour = variable), position = "dodge") +
+  labs(title = "Cumulative number of cases since 300th case by exact date- log scale",
+  subtitle = "Data from Ministero Della Salute and Folkhälsomyndigheten", x = "", y = "") +
+  theme_minimal() +
+  scale_colour_discrete(name = "Country", labels = c("Sweden", "Italy")) +
+  scale_y_log10(breaks=c(300,1000,10000,100000), limits=c(300,140000), label = comma) +
+  scale_x_date(labels = date_format("%d-%m"), breaks = "6 day") +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1)) +
+  theme(axis.text.y = element_text(angle = 45)) 
+
+new_cases_per_day %>% 
+  filter(value != 0) %>% 
+ggplot() +
+  geom_col(aes(x = data, y = value, fill = variable), position = "dodge") +
+  labs(title = "New cases per day- log scale",
+  subtitle = "Data from Ministero Della Salute and Folkhälsomyndigheten", x = "", y = "") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Country", labels = c("Sweden", "Italy")) +
+  scale_y_log10(breaks=c(0,100,1000,10000), limits=c(1,10000)) +
+  scale_x_date(labels = date_format("%d-%m"), breaks = "6 day") +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1)) 
+
+
+```
+
+```{r}
+
+# Finally, interactive viz
+library(dplyr)
+library(streamgraph)
+
+g <- it_swe_long %>%
+  streamgraph("variable", "value", "data", offset="zero", interpolate="linear") %>%
+  sg_fill_brewer("PuOr") %>% 
+  sg_axis_x(1) %>% 
+  sg_legend(show=TRUE, label="variable: ")
+
+
+r <- cum_cases_since_200 %>%
+  streamgraph("variable", "value", "data", offset="zero", interpolate="cardinal") %>%
+  sg_axis_x(1, "data", "%d %m") %>% 
+  sg_fill_brewer("PuOr")
+
+```
+
